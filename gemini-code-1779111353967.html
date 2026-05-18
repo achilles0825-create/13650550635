@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Steam級槍戰 RPG - 六大武器神裝熔煉版</title>
+<style>
+    body { margin:0; background:#111; overflow:hidden; font-family: Arial; }
+    canvas { display:block; margin:auto; background:#222; cursor:crosshair; }
+</style>
+</head>
+<body>
+<canvas id="game" width="800" height="1000"></canvas>
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+// ===== 玩家 =====
+let player = { x:380, y:900, width:40, height:40, health:100, maxHealth:100, invincible:0 };
+
+// ===== 遊戲狀態 =====
+let bullets = [], enemies = [], drops = [], inventory = [];
+let particles = []; 
+let keys = {}, mouse = { x:0, y:0 };
+let shooting = false, score = 0, killCount = 0, money = 0;
+let scrap = 0; // 熔煉獲得的奈米合金材料
+
+// 武器系統
+let weapon = "pistol";
+let weaponLevel = { pistol:1, shotgun:1, machinegun:1, laser:1, rocket:1, railgun:1 };
+let lastShot = 0;
+
+let shopOpen = false, showUI = false;
+let boss = null;
+let bossSpawnScore = 0, lastEnemySpawn = 0;
+let gameOver = false, respawnCountdown = 0;
+let saveHintTimer = 0; // 存檔成功提示計時器
+
+// ===== 裝備 =====
+let gear = { helmet:null, armor:null, boots:null, chip:null };
+let baseEquipment = { armor:0, speed:5, doubleBullet:false, tracking:false };
+let equipment = { ...baseEquipment };
+
+// ===== 核心安全存檔系統 =====
+function saveGame(showHint = false){
+    const saveData = {
+        money, 
+        scrap, 
+        weaponLevel, 
+        gear, 
+        inventory, 
+        baseEquipment
+    };
+    localStorage.setItem("rpgSaveHex_v3", JSON.stringify(saveData));
+    if(showHint) {
+        saveHintTimer = 60; // 顯示提示約 1 秒
+    }
+}
+
+function loadGame(){
+    let d = JSON.parse(localStorage.getItem("rpgSaveHex_v3"));
+    if(d){
+        money = d.money || 0;
+        scrap = d.scrap || 0;
+        weaponLevel = d.weaponLevel || weaponLevel;
+        gear = d.gear || gear;
+        inventory = d.inventory || [];
+        baseEquipment = d.baseEquipment || baseEquipment;
+    }
+}
+// 定時自動存檔 (改為 10 秒，雙重保障)
+setInterval(() => saveGame(true), 10000);
+loadGame();
+
+// ===== 控制 =====
+document.addEventListener("keydown", e => {
+    keys[e.code] = true;
+    if(e.code === "KeyB") { shopOpen = !shopOpen; if(shopOpen) showUI = false; }
+    if(e.code === "KeyI") { showUI = !showUI; if(showUI) shopOpen = false; }
+
+    // 戰場狀態切換武器
+    if(!shopOpen && !showUI){
+        if(e.code === "Digit1") weapon = "pistol";
+        if(e.code === "Digit2") weapon = "shotgun";
+        if(e.code === "Digit3") weapon = "machinegun";
+        if(e.code === "Digit4") weapon = "laser";
+        if(e.code === "Digit5") weapon = "rocket";
+        if(e.code === "Digit6") weapon = "railgun";
+    }
+
+    // 背包 UI 操作 (支援 1-6 格)
+    if(showUI){
+        let index = -1;
+        if(e.code === "Digit1") index = 0;
+        if(e.code === "Digit2") index = 1;
+        if(e.code === "Digit3") index = 2;
+        if(e.code === "Digit4") index = 3;
+        if(e.code === "Digit5") index = 4;
+        if(e.code === "Digit6") index = 5;
+        
+        if(index !== -1 && inventory[index]) { 
+            if(e.shiftKey) {
+                meltItem(index);
+            } else {
+                equipItem(index); 
+            }
+        }
+
+        // R 鍵：消耗 30 合金製造隨機高階神裝
+        if(e.code === "KeyR") {
+            craftItem();
+        }
+    }
+});
+document.addEventListener("keyup", e => keys[e.code] = false);
+
+canvas.addEventListener("mousemove", e => {
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = e.clientX - rect.left;
+    mouse.y = e.clientY - rect.top;
+});
+canvas.addEventListener("mousedown", () => shooting = true);
+canvas.addEventListener("mouseup", () => shooting = false);
+canvas.addEventListener("click", e => { 
+    if(shopOpen) {
+        handleShopClick(e); 
+    } else {
+        // 檢查是否點擊右上角「手動存檔」
+        const rect = canvas.getBoundingClientRect();
+        let mx = e.clientX - rect.left, my = e.clientY - rect.top;
+        if(mx > 680 && mx < 780 && my > 20 && my < 55) {
+            saveGame(true);
+            spawnExplosion(730, 37, "#00FFCC", 10, 4);
+        }
+    }
+});
+
+// ===== 產生粒子特效 =====
+function spawnExplosion(x, y, color, count, size) {
+    for (let i = 0; i < count; i++) {
+        let angle = Math.random() * Math.PI * 2;
+        let speed = Math.random() * 4 + 2;
+        particles.push({
+            x: x, y: y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            life: Math.random() * 20 + 10,
+            size: Math.random() * size + 2,
+            color: color
+        });
+    }
+}
+
+// ===== 射擊系統 =====
+function canShoot(rate){
+    let now = Date.now();
+    if(now - lastShot > rate){ lastShot = now; return true; }
+    return false;
+}
+
+function shoot(){
+    let cx = player.x + 20, cy = player.y + 20;
+    let dx = mouse.x - cx, dy = mouse.y - cy;
+    let len = Math.sqrt(dx*dx + dy*dy) || 1;
+    let vx = dx / len, vy = dy / len;
+    let multi = equipment.doubleBullet ? 2 : 1;
+
+    for(let m = 0; m < multi; m++){
+        let offset = (m === 1) ? 12 : 0; 
+
+        if(weapon === "pistol" && canShoot(300)) {
+            let spd = 8 + weaponLevel.pistol;
+            bullets.push({ x: cx + offset, y: cy, vx: vx * spd, vy: vy * spd, speed: spd, enemy: false, tracking: equipment.tracking, damage: 12, size: 5, color: "#00FFFF" });
+        }
+        if(weapon === "shotgun" && canShoot(550)) {
+            let spread = 0.22;   
+            for(let i = -2; i <= 2; i++){
+                let angle = i * spread;
+                let rx = vx * Math.cos(angle) - vy * Math.sin(angle);
+                let ry = vx * Math.sin(angle) + vy * Math.cos(angle);
+                let spd = (6 + weaponLevel.shotgun) + (Math.random() * 2); 
+                bullets.push({ x: cx, y: cy, vx: rx * spd, vy: ry * spd, speed: spd, enemy: false, tracking: equipment.tracking, damage: 15, isShotgun: true, size: 5, color: "#FFaa00" });
+            }
+        }
+        if(weapon === "machinegun" && canShoot(70)) {
+            let spd = 14 + weaponLevel.machinegun;
+            let jitter = (Math.random() - 0.5) * 0.15;
+            let rx = vx + jitter, ry = vy + jitter;
+            let rLen = Math.sqrt(rx*rx + ry*ry) || 1;
+            bullets.push({ x: cx + offset, y: cy, vx: (rx/rLen) * spd, vy: (ry/rLen) * spd, speed: spd, enemy: false, tracking: equipment.tracking, damage: 7, size: 4, color: "#FFFF00" });
+        }
+        if(weapon === "laser" && canShoot(250)) {
+            let spd = 18 + weaponLevel.laser;
+            bullets.push({ x: cx + offset, y: cy, vx: vx * spd, vy: vy * spd, speed: spd, enemy: false, tracking: equipment.tracking, damage: 9, isLaser: true, size: 4, color: "#FF00FF" });
+        }
+        if(weapon === "rocket" && canShoot(800)) {
+            let spd = 6 + weaponLevel.rocket * 0.5;
+            bullets.push({ x: cx, y: cy, vx: vx * spd, vy: vy * spd, speed: spd, enemy: false, tracking: equipment.tracking, damage: 30, isRocket: true, size: 10, color: "#FF3333" });
+        }
+        if(weapon === "railgun" && canShoot(1500)) {
+            let spd = 22 + weaponLevel.railgun;
+            bullets.push({ x: cx, y: cy, vx: vx * spd, vy: vy * spd, speed: spd, enemy: false, tracking: false, damage: 120 + (weaponLevel.railgun * 20), isRailgun: true, size: 24, color: "#00FF88" });
+            spawnExplosion(cx, cy, "#00FF88", 15, 6);
+        }
+    }
+}
+
+// ===== 商店系統 =====
+function handleShopClick(e){
+    const rect = canvas.getBoundingClientRect();
+    let mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    let bought = false;
+    
+    if(mx > 150 && mx < 350){
+        if(my > 200 && my < 240 && money >= 5){ money -= 5; player.health = Math.min(player.health + 15, 100); bought = true; }
+        if(my > 260 && my < 300 && money >= 15){ money -= 15; baseEquipment.armor++; bought = true; }
+        if(my > 320 && my < 360 && money >= 20){ money -= 20; baseEquipment.speed += 1; bought = true; }
+        if(my > 380 && my < 420 && money >= 30){ money -= 30; baseEquipment.doubleBullet = true; bought = true; }
+        if(my > 440 && my < 480 && money >= 50){ money -= 50; baseEquipment.tracking = true; bought = true; } 
+    }
+    if(mx > 450 && mx < 650){
+        if(my > 200 && my < 240 && money >= 10){ money -= 10; weaponLevel.pistol++; bought = true; }
+        if(my > 260 && my < 300 && money >= 20){ money -= 20; weaponLevel.shotgun++; bought = true; }
+        if(my > 320 && my < 360 && money >= 30){ money -= 30; weaponLevel.machinegun++; bought = true; }
+        if(my > 380 && my < 420 && money >= 35){ money -= 35; weaponLevel.laser++; bought = true; }
+        if(my > 440 && my < 480 && money >= 40){ money -= 40; weaponLevel.rocket++; bought = true; }
+        if(my > 500 && my < 540 && money >= 60){ money -= 60; weaponLevel.railgun++; bought = true; }
+    }
+    if(bought) saveGame(false); // 購買後靜態存檔
+}
+
+function drawShop(){
+    ctx.fillStyle = "rgba(10,10,15,0.92)"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#00FFFF"; ctx.font = "26px Arial"; ctx.fillText("軍火補給整備中心 (按 B 鍵返回戰場)", 180, 120);
+    
+    ctx.font = "16px Arial";
+    ctx.fillStyle = "#FFF"; ctx.fillText("【角色與核心增幅】", 150, 180);
+    drawBtn(150, 200, `戰地醫療修復 +15 ($5)`);
+    drawBtn(150, 260, `防彈護甲層 +1 ($15)`);
+    drawBtn(150, 320, `動力外骨骼鞋 ($20)`);
+    drawBtn(150, 380, `解鎖：雙倍彈道晶片 ($30)`);
+    drawBtn(150, 440, `解鎖：AI自動追尾晶片 ($50)`);
+
+    ctx.fillStyle = "#FFF"; ctx.fillText("【致命武器科技升級】", 450, 180);
+    drawBtn(450, 200, `手槍威力強化 Lv.${weaponLevel.pistol} ($10)`);
+    drawBtn(450, 260, `散彈彈丸密度 Lv.${weaponLevel.shotgun} ($20)`);
+    drawBtn(450, 320, `機槍冷卻射速 Lv.${weaponLevel.machinegun} ($30)`);
+    drawBtn(450, 380, `雷射核心聚焦 Lv.${weaponLevel.laser} ($35)`);
+    drawBtn(450, 440, `高爆火箭當量 Lv.${weaponLevel.rocket} ($40)`);
+    drawBtn(450, 500, `電磁軌道能耗 Lv.${weaponLevel.railgun} ($60)`);
+    
+    ctx.fillStyle = "#FFD700"; ctx.font = "24px Arial"; ctx.fillText("晶片資源可用餘額: $" + money, 260, 680);
+}
+function drawBtn(x, y, text){ 
+    ctx.fillStyle = "#222530"; ctx.fillRect(x, y, 220, 38); 
+    ctx.strokeStyle = "#445577"; ctx.strokeRect(x, y, 220, 38); 
+    ctx.fillStyle = "#E0E0E0"; ctx.fillText(text, x + 12, y + 24); 
+}
+
+// ===== 核心裝備與【全新熔煉/製造機制】 =====
+function equipItem(inventoryIndex){
+    let item = inventory[inventoryIndex]; if(!item) return;
+    let slot = item.type; if(slot === "heal") return;
+    if(gear[slot]) { inventory.push(gear[slot]); }
+    gear[slot] = item;
+    inventory.splice(inventoryIndex, 1);
+    saveGame(false);
+}
+
+// 熔煉系統：拆解背包装備換取材料
+function meltItem(index) {
+    let item = inventory[index];
+    if(!item || item.type === "heal") return;
+    
+    let reward = 1;
+    if(item.rarity === "rare") reward = 3;
+    if(item.rarity === "epic") reward = 8;
+    if(item.rarity === "legendary") reward = 20;
+    
+    scrap += reward;
+    spawnExplosion(400, 500, "#00FF66", 15, 5);
+    inventory.splice(index, 1);
+    saveGame(false);
+}
+
+// 製造系統
+function craftItem() {
+    if(scrap < 30) return;
+    if(inventory.length >= 6) return; // 配合 UI 限制背包上限為 6 格
+    
+    scrap -= 30;
+    let types = ["helmet", "armor", "boots", "chip"];
+    let t = types[Math.floor(Math.random() * types.length)];
+    
+    let rarity = Math.random() < 0.25 ? "legendary" : "epic";
+    let stats = {};
+    let mult = rarity === "legendary" ? 5 : 3;
+    
+    if(t === "armor" || t === "helmet") stats.armor = mult;
+    if(t === "boots") stats.speed = mult;
+    if(t === "chip") { stats.doubleBullet = true; stats.tracking = true; }
+    
+    inventory.push({ type: t, rarity, stats });
+    spawnExplosion(400, 500, "#ff8000", 35, 7);
+    saveGame(false);
+}
+
+function applyStats(){
+    equipment = { ...baseEquipment };
+    for(let k in gear){
+        let g = gear[k]; if(!g) continue;
+        if(g.stats.armor) equipment.armor += g.stats.armor;
+        if(g.stats.speed) equipment.speed += g.stats.speed;
+        if(g.stats.doubleBullet) equipment.doubleBullet = true;
+        if(g.stats.tracking) equipment.tracking = true;
+    }
+}
+
+// ===== 隨機掉落 =====
+function getRandomRarity(){ 
+    let r = Math.random(); 
+    if(r < 0.5) return "common"; if(r < 0.8) return "rare"; if(r < 0.95) return "epic"; return "legendary"; 
+}
+function createItem(type){ 
+    let rarity = getRandomRarity(); let stats = {}; 
+    let mult = rarity === "legendary" ? 5 : rarity === "epic" ? 3 : rarity === "rare" ? 2 : 1;
+    if(type === "armor" || type === "helmet") stats.armor = mult; 
+    if(type === "boots") stats.speed = mult; 
+    if(type === "chip") { stats.doubleBullet = true; stats.tracking = true; } 
+    return { type, rarity, stats }; 
+}
+function spawnDrop(x, y){ 
+    let types = ["helmet", "armor", "boots", "chip", "heal"]; 
+    let t = types[Math.floor(Math.random() * types.length)]; 
+    let item = (t === "heal") ? { type: "heal" } : createItem(t); 
+    drops.push({ x, y, width: 25, height: 25, item }); 
+}
+
+function getRarityColor(rarity) {
+    if(rarity === "rare") return "#007fff";     // 藍色
+    if(rarity === "epic") return "#a335ee";     // 紫色
+    if(rarity === "legendary") return "#ff8000"; // 橘色
+    return "#e0E0E0";                           // 白色
+}
+
+// ===== 敵人配置 =====
+function spawnEnemy(){ 
+    let r = Math.random(); let type = "normal"; 
+    if(r < 0.4) type = "normal"; else if(r < 0.65) type = "fast"; else if(r < 0.85) type = "tank"; else type = "shooter"; 
+    
+    let e = { x: Math.random() * 760, y: 0, width: 30, height: 30, type, health: 30, speed: 1.5 }; 
+    if(type === "fast") { e.speed = 3.2; e.health = 20; } 
+    if(type === "tank") { e.speed = 0.8; e.health = 120; e.width = 45; e.height = 45; } 
+    if(type === "shooter") { e.cooldown = 60; e.health = 25; } 
+    e.maxHealth = e.health; enemies.push(e); 
+}
+function spawnBoss(){ boss = { x: 350, y: 50, width: 80, height: 80, health: 600 + score*5, maxHealth: 600 + score*5 }; }
+
+// ===== 核心物理引擎與更新 =====
+function update(t){
+    if(!t) t = 0;
+    
+    if(gameOver){
+        if(respawnCountdown > 0){
+            draw();
+            ctx.fillStyle = "rgba(0,0,0,0.7)"; ctx.fillRect(0,0,canvas.width,canvas.height);
+            ctx.fillStyle = "red"; ctx.font = "40px Arial"; ctx.fillText("戰死沙場！", 320, 450);
+            ctx.fillStyle = "white"; ctx.font = "30px Arial"; ctx.fillText("安全屋同步複製中: " + Math.ceil(respawnCountdown / 60), 260, 520);
+            respawnCountdown--; requestAnimationFrame(update);
+        } else { 
+            resetGame(); 
+            player.invincible = 120; 
+            requestAnimationFrame(update); 
+        }
+        return;
+    }
+
+    if(shopOpen) { drawShop(); requestAnimationFrame(update); return; }
+
+    if(t - lastEnemySpawn > 1000){ spawnEnemy(); lastEnemySpawn = t; }
+    if(score >= bossSpawnScore + 30 && !boss){ spawnBoss(); bossSpawnScore = score; }
+    
+    applyStats();
+
+    if(keys["KeyA"] || keys["ArrowLeft"]) player.x -= equipment.speed;
+    if(keys["KeyD"] || keys["ArrowRight"]) player.x += equipment.speed;
+    if(keys["KeyW"] || keys["ArrowUp"]) player.y -= equipment.speed;
+    if(keys["KeyS"] || keys["ArrowDown"]) player.y += equipment.speed;
+
+    player.x = Math.max(0, Math.min(canvas.width - player.width, player.x));
+    player.y = Math.max(0, Math.min(canvas.height - player.height, player.y));
+
+    if(shooting) shoot();
+
+    for (let i = particles.length - 1; i >= 0; i--) {
+        let p = particles[i]; p.x += p.vx; p.y += p.vy; p.life--;
+        if (p.life <= 0) particles.splice(i, 1);
+    }
+
+    // 子彈追尾與移動
+    bullets.forEach(b => {
+        if(b.tracking && !b.enemy && !b.isRailgun){ 
+            let target = null; let minDist = Infinity;
+            enemies.forEach(e => {
+                let dx = e.x - b.x, dy = e.y - b.y, dist = Math.sqrt(dx*dx + dy*dy);
+                if(dist < minDist){ minDist = dist; target = e; }
+            });
+            if(boss){ 
+                let dx = boss.x - b.x, dy = boss.y - b.y, dist = Math.sqrt(dx*dx + dy*dy); 
+                if(dist < minDist){ minDist = dist; target = boss; } 
+            }
+            if(target){
+                let dx = (target.x + target.width/2) - b.x;
+                let dy = (target.y + target.height/2) - b.y;
+                let len = Math.sqrt(dx*dx + dy*dy) || 1;
+                b.vx = (dx / len) * b.speed; b.vy = (dy / len) * b.speed;
+            }
+        }
+        b.x += b.vx; b.y += b.vy;
+    });
+
+    bullets = bullets.filter(b => b.x > -100 && b.x < canvas.width + 100 && b.y > -100 && b.y < canvas.height + 100);
+
+    enemies.forEach(e => {
+        let dx = player.x - e.x, dy = player.y - e.y, dist = Math.sqrt(dx*dx + dy*dy) || 1;
+        e.x += (dx / dist) * e.speed; e.y += (dy / dist) * e.speed;
+        
+        if(e.type === "shooter"){
+            e.cooldown--;
+            if(e.cooldown <= 0){
+                let eLen = Math.sqrt(dx*dx + dy*dy) || 1;
+                bullets.push({ x: e.x + 15, y: e.y + 15, vx: (dx / eLen) * 5, vy: (dy / eLen) * 5, speed: 5, enemy: true, size: 5, color: "red", damage: 5 });
+                e.cooldown = 70;
+            }
+        }
+        if(e.x < player.x + player.width && e.x + e.width > player.x && e.y < player.y + player.height && e.y + e.height > player.y){
+            if(player.invincible === 0){
+                player.health -= Math.max(1, 10 - equipment.armor); player.invincible = 30;
+            }
+        }
+    });
+
+    if(boss){
+        let dx = player.x - boss.x, dy = player.y - boss.y, dist = Math.sqrt(dx*dx + dy*dy) || 1;
+        boss.x += (dx / dist) * 1.1; boss.y += (dy / dist) * 1.1;
+        if(Math.random() < 0.05){
+            let bLen = Math.sqrt(dx*dx + dy*dy) || 1;
+            bullets.push({ x: boss.x + 40, y: boss.y + 40, vx: (dx / bLen) * 6, vy: (dy / bLen) * 6, speed: 6, enemy: true, size: 6, color: "red", damage: 8 });
+        }
+    }
+
+    // 傷害彈道碰撞運算
+    for(let i = bullets.length - 1; i >= 0; i--){
+        let b = bullets[i]; if(!b) continue;
+        
+        if(b.enemy){
+            if(b.x > player.x && b.x < player.x + player.width && b.y > player.y && b.y < player.y + player.height){
+                if(player.invincible === 0){
+                    player.health -= Math.max(1, b.damage - equipment.armor); player.invincible = 30;
+                }
+                bullets.splice(i, 1);
+            }
+            continue;
+        }
+
+        if(boss && b.x > boss.x && b.x < boss.x + boss.width && b.y > boss.y && b.y < boss.y + boss.height){
+            boss.health -= b.damage;
+            if(b.isRocket) {
+                spawnExplosion(b.x, b.y, "#FF5500", 30, 8);
+                enemies.forEach(e => {
+                    let edx = e.x - b.x, edy = e.y - b.y, edist = Math.sqrt(edx*edx + edy*edy);
+                    if(edist < 120) e.health -= (b.damage * 0.8);
+                });
+            }
+            if(b.isShotgun && !boss.invincible) { boss.y -= 3; }
+            if(!b.isLaser && !b.isRailgun) { bullets.splice(i, 1); continue; }
+            if(boss.health <= 0){ score += 30; money += 20; spawnDrop(boss.x + 40, boss.y + 40); boss = null; saveGame(false); }
+        }
+
+        for(let j = enemies.length - 1; j >= 0; j--){
+            let e = enemies[j];
+            if(b.x > e.x && b.x < e.x + e.width && b.y > e.y && b.y < e.y + e.height){
+                e.health -= b.damage;
+                if(b.isShotgun) { e.x += (b.vx / b.speed) * 12; e.y += (b.vy / b.speed) * 12; }
+                if(b.isRocket) {
+                    spawnExplosion(b.x, b.y, "#FF3300", 25, 7);
+                    enemies.forEach(otherEnemy => {
+                        let ex = otherEnemy.x - b.x, ey = otherEnemy.y - b.y;
+                        if(Math.sqrt(ex*ex + ey*ey) < 120) otherEnemy.health -= b.damage;
+                    });
+                }
+                if(b.isRailgun || b.isLaser) { spawnExplosion(b.x, b.y, b.color, 4, 3); }
+
+                if(e.health <= 0){ 
+                    spawnExplosion(e.x+15, e.y+15, "red", 8, 4);
+                    enemies.splice(j, 1); score++; killCount++; 
+                    if(killCount % 4 === 0) money += 3; 
+                    if(Math.random() < 0.22) spawnDrop(e.x, e.y); 
+                }
+
+                if(!b.isLaser && !b.isRailgun && !b.isRocket) { bullets.splice(i, 1); break; }
+                if(b.isRocket) { bullets.splice(i, 1); break; } 
+            }
+        }
+    }
+
+    // 拾取掉落物
+    for(let i = drops.length - 1; i >= 0; i--){
+        let d = drops[i];
+        if(player.x < d.x + d.width && player.x + player.width > d.x && player.y < d.y + d.height && player.y + player.height > d.y){
+            if(d.item.type === "heal") {
+                player.health = Math.min(player.maxHealth, player.health + 25);
+                drops.splice(i, 1);
+            } else if (inventory.length < 6) { // 限制背包上限 6
+                inventory.push(d.item); 
+                drops.splice(i, 1);
+                saveGame(false); // 撿到裝備時默默存檔
+            }
+        }
+    }
+
+    if(player.health <= 0 && !gameOver){ 
+        gameOver = true; 
+        respawnCountdown = 180; 
+    }
+    if(player.invincible > 0) player.invincible--;
+    if(saveHintTimer > 0) saveHintTimer--;
+
+    draw();
+    requestAnimationFrame(update);
+}
+
+// ===== 畫面渲染 =====
+function draw(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.fillStyle = "#0c0d12"; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    particles.forEach(p => { ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, p.size, p.size); });
+
+    // 掉落物
+    drops.forEach(d => {
+        let color = d.item.type === "heal" ? "#00FF22" : getRarityColor(d.item.rarity);
+        ctx.fillStyle = color; ctx.fillRect(d.x, d.y, d.width, d.height);
+        ctx.strokeStyle = "white"; ctx.strokeRect(d.x, d.y, d.width, d.height);
+    });
+
+    // 玩家
+    if(player.invincible % 10 < 5) {
+        ctx.fillStyle = "#00FFFF"; ctx.fillRect(player.x, player.y, player.width, player.height);
+        ctx.strokeStyle = "white"; ctx.strokeRect(player.x, player.y, player.width, player.height);
+    }
+
+    // 子彈
+    bullets.forEach(b => { 
+        ctx.fillStyle = b.color || "white"; 
+        if(b.isRailgun) ctx.fillRect(b.x - b.size/2, b.y - b.size/2, b.size, b.size);
+        else ctx.fillRect(b.x, b.y, b.size || 5, b.size || 5); 
+    });
+
+    // 小怪
+    enemies.forEach(e => {
+        ctx.fillStyle = e.type === "fast" ? "#FF8800" : e.type === "tank" ? "#9900FF" : "#FF3333";
+        ctx.fillRect(e.x, e.y, e.width, e.height);
+        ctx.fillStyle = "#333"; ctx.fillRect(e.x, e.y - 8, e.width, 5);
+        ctx.fillStyle = "#00FF22"; ctx.fillRect(e.x, e.y - 8, e.width * (e.health / e.maxHealth), 5);
+    });
+
+    // BOSS
+    if(boss){
+        ctx.fillStyle = "#FF007F"; ctx.fillRect(boss.x, boss.y, boss.width, boss.height);
+        ctx.fillStyle = "#222"; ctx.fillRect(200, 15, 400, 20);
+        ctx.fillStyle = "#FF0055"; ctx.fillRect(200, 15, 400 * (boss.health / boss.maxHealth), 20);
+        ctx.strokeStyle = "white"; strokeRect(200, 15, 400, 20);
+    }
+
+    // 頂部常規戰術 UI
+    ctx.fillStyle = "#222"; ctx.fillRect(10, 20, 200, 16);
+    ctx.fillStyle = "#00FF66"; ctx.fillRect(10, 20, 200 * (player.health / player.maxHealth), 16);
+    ctx.strokeStyle = "white"; ctx.strokeRect(10, 20, 200, 16);
+
+    ctx.fillStyle = "white"; ctx.font = "15px Arial";
+    ctx.fillText("戰術評分: " + score, 10, 60);
+    ctx.fillStyle = "#FFD700"; ctx.fillText("晶片資金: $" + money + " | 奈米合金: " + scrap + " 個", 10, 80);
+    ctx.fillStyle = "#FF00FF"; ctx.fillText("武裝配置: " + weapon.toUpperCase() + " [Lv." + weaponLevel[weapon] + "]", 10, 100);
+    ctx.fillStyle = "white"; ctx.font = "13px Arial";
+    ctx.fillText("護甲: " + equipment.armor + " | 速度: " + equipment.speed + " | 雙發: " + (equipment.doubleBullet?"ON":"OFF") + " | 追蹤: " + (equipment.tracking?"ON":"OFF"), 10, 120);
+    ctx.fillStyle = "#00FFCC"; ctx.fillText("1-6: 武器切換 | B: 軍火商店 | I: 整備背包與核心熔煉", 10, 140);
+
+    // 右上角：手動存檔 UI 與提示
+    ctx.fillStyle = "#1a3a3a"; ctx.fillRect(680, 20, 100, 35);
+    ctx.strokeStyle = "#00FFCC"; ctx.strokeRect(680, 20, 100, 35);
+    ctx.fillStyle = "#00FFCC"; ctx.font = "14px Arial"; ctx.fillText("手動存檔", 702, 42);
+
+    if(saveHintTimer > 0) {
+        ctx.fillStyle = "#00FF66"; ctx.font = "bold 13px Arial";
+        ctx.fillText("● 雲端存檔同步成功", 650, 75);
+    }
+
+    // ===== 背包、核心熔煉與製造 UI 面板 =====
+    if(showUI){
+        ctx.fillStyle = "rgba(12,15,25,0.96)"; ctx.fillRect(120, 150, 560, 600);
+        ctx.strokeStyle = "#00FFCC"; ctx.strokeRect(120, 150, 560, 600);
+        
+        ctx.fillStyle = "#00FFFF"; ctx.font = "22px Arial"; ctx.fillText("【外骨骼核心裝備面板】", 270, 195);
+        
+        // 1. 已穿戴裝備欄
+        let y = 240;
+        for(let k in gear){
+            let isEquipped = gear[k];
+            let itemText = isEquipped ? `[${isEquipped.rarity.toUpperCase()}]護盾模組` : "[未安裝空槽]";
+            ctx.fillStyle = isEquipped ? getRarityColor(isEquipped.rarity) : "#666";
+            ctx.font = "16px Arial";
+            ctx.fillText(`${k.toUpperCase()} 槽位 : ${itemText}`, 200, y);
+            y += 35;
+        }
+        
+        // 分割線
+        ctx.strokeStyle = "#334466"; ctx.beginPath(); ctx.moveTo(150, y+10); ctx.lineTo(650, y+10); ctx.stroke();
+        
+        // 2. 儲存背包（支援最大 6 格）
+        ctx.fillStyle = "#FFCC00"; ctx.font = "18px Arial"; ctx.fillText(`【戰術背包物資欄 (MAX: 6, 當前: ${inventory.length})】`, 200, y + 45);
+        y += 80;
+        
+        if(inventory.length === 0) {
+            ctx.fillStyle = "#555"; ctx.font = "15px Arial"; ctx.fillText("目前行囊中無多餘晶片或防具模組", 200, y);
+        }
+        
+        inventory.forEach((item, idx) => {
+            if(idx < 6) {
+                ctx.fillStyle = getRarityColor(item.rarity);
+                ctx.font = "15px Arial";
+                ctx.fillText(`${idx + 1}. ${item.type.toUpperCase()} 模組 [${item.rarity.toUpperCase()}]`, 180, y);
+                
+                ctx.fillStyle = "#AEEAAA"; ctx.font = "12px Arial";
+                ctx.fillText(`(按 ${idx+1} 裝備 / Shift+${idx+1} 熔煉)`, 460, y);
+                y += 32;
+            }
+        });
+        
+        // 3. 底部熔煉鍛造爐
+        y = 620;
+        ctx.strokeStyle = "#445588"; ctx.strokeRect(150, y, 500, 90);
+        ctx.fillStyle = "rgba(20,30,50,0.6)"; ctx.fillRect(150, y, 500, 90);
+        
+        ctx.fillStyle = "#00FF66"; ctx.font = "16px Arial"; ctx.fillText("【外骨骼重組微型黑科技鍛造爐】", 170, y + 30);
+        ctx.fillStyle = "#FFF"; ctx.font = "14px Arial"; ctx.fillText(`當前儲備奈米合金: ${scrap} / 30 個`, 170, y + 55);
+        
+        if(scrap >= 30) {
+            ctx.fillStyle = "#FF8800"; ctx.font = "bold 14px Arial"; ctx.fillText("【按 R 鍵】：消耗 30 合金，100% 打造隨機高階[紫/橘]神裝！", 170, y + 78);
+        } else {
+            ctx.fillStyle = "#888"; ctx.font = "13px Arial"; ctx.fillText(`材料不足！請按住 Shift + 數字鍵 熔煉背包內多餘防具。`, 170, y + 78);
+        }
+    }
+}
+
+function resetGame(){ 
+    // 核心優化：保留辛苦存下來的 money 和 scrap，只重置當局的分數
+    bullets = []; enemies = []; boss = null; drops = []; particles = []; score = 0; killCount = 0; gameOver = false; 
+    player.health = 100;
+    saveGame(false); // 復活時自動進行安全存檔保護
+}
+
+// 啟動主引擎
+requestAnimationFrame(update);
+</script>
+</body>
+</html>
