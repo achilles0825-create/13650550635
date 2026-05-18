@@ -67,7 +67,7 @@ function loadGame(){
         baseEquipment = d.baseEquipment || baseEquipment;
     }
 }
-// 定時自動存檔 (改為 10 秒，雙重保障)
+// 定時自動存檔
 setInterval(() => saveGame(true), 10000);
 loadGame();
 
@@ -105,7 +105,7 @@ document.addEventListener("keydown", e => {
             }
         }
 
-        // R 鍵：消耗 30 合金製造隨機高階神裝
+        // R 鍵：微型黑科技鍛造
         if(e.code === "KeyR") {
             craftItem();
         }
@@ -124,7 +124,7 @@ canvas.addEventListener("click", e => {
     if(shopOpen) {
         handleShopClick(e); 
     } else {
-        // 檢查是否點擊右上角「手動存檔」
+        // 檢查手動存檔按鈕點擊
         const rect = canvas.getBoundingClientRect();
         let mx = e.clientX - rect.left, my = e.clientY - rect.top;
         if(mx > 680 && mx < 780 && my > 20 && my < 55) {
@@ -225,7 +225,7 @@ function handleShopClick(e){
         if(my > 440 && my < 480 && money >= 40){ money -= 40; weaponLevel.rocket++; bought = true; }
         if(my > 500 && my < 540 && money >= 60){ money -= 60; weaponLevel.railgun++; bought = true; }
     }
-    if(bought) saveGame(false); // 購買後靜態存檔
+    if(bought) saveGame(false);
 }
 
 function drawShop(){
@@ -256,7 +256,7 @@ function drawBtn(x, y, text){
     ctx.fillStyle = "#E0E0E0"; ctx.fillText(text, x + 12, y + 24); 
 }
 
-// ===== 核心裝備與【全新熔煉/製造機制】 =====
+// ===== 裝備系統 =====
 function equipItem(inventoryIndex){
     let item = inventory[inventoryIndex]; if(!item) return;
     let slot = item.type; if(slot === "heal") return;
@@ -266,7 +266,6 @@ function equipItem(inventoryIndex){
     saveGame(false);
 }
 
-// 熔煉系統：拆解背包装備換取材料
 function meltItem(index) {
     let item = inventory[index];
     if(!item || item.type === "heal") return;
@@ -282,10 +281,9 @@ function meltItem(index) {
     saveGame(false);
 }
 
-// 製造系統
 function craftItem() {
     if(scrap < 30) return;
-    if(inventory.length >= 6) return; // 配合 UI 限制背包上限為 6 格
+    if(inventory.length >= 6) return; 
     
     scrap -= 30;
     let types = ["helmet", "armor", "boots", "chip"];
@@ -336,10 +334,10 @@ function spawnDrop(x, y){
 }
 
 function getRarityColor(rarity) {
-    if(rarity === "rare") return "#007fff";     // 藍色
-    if(rarity === "epic") return "#a335ee";     // 紫色
-    if(rarity === "legendary") return "#ff8000"; // 橘色
-    return "#e0E0E0";                           // 白色
+    if(rarity === "rare") return "#007fff"; 
+    if(rarity === "epic") return "#a335ee"; 
+    if(rarity === "legendary") return "#ff8000"; 
+    return "#e0E0E0"; 
 }
 
 // ===== 敵人配置 =====
@@ -396,7 +394,7 @@ function update(t){
         if (p.life <= 0) particles.splice(i, 1);
     }
 
-    // 子彈追尾與移動
+    // 子彈移動
     bullets.forEach(b => {
         if(b.tracking && !b.enemy && !b.isRailgun){ 
             let target = null; let minDist = Infinity;
@@ -448,7 +446,7 @@ function update(t){
         }
     }
 
-    // 傷害彈道碰撞運算
+    // 碰撞運算
     for(let i = bullets.length - 1; i >= 0; i--){
         let b = bullets[i]; if(!b) continue;
         
@@ -503,17 +501,17 @@ function update(t){
         }
     }
 
-    // 拾取掉落物
+    // 拾取物
     for(let i = drops.length - 1; i >= 0; i--){
         let d = drops[i];
         if(player.x < d.x + d.width && player.x + player.width > d.x && player.y < d.y + d.height && player.y + player.height > d.y){
             if(d.item.type === "heal") {
                 player.health = Math.min(player.maxHealth, player.health + 25);
                 drops.splice(i, 1);
-            } else if (inventory.length < 6) { // 限制背包上限 6
+            } else if (inventory.length < 6) { 
                 inventory.push(d.item); 
                 drops.splice(i, 1);
-                saveGame(false); // 撿到裝備時默默存檔
+                saveGame(false); 
             }
         }
     }
@@ -536,27 +534,23 @@ function draw(){
 
     particles.forEach(p => { ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, p.size, p.size); });
 
-    // 掉落物
     drops.forEach(d => {
         let color = d.item.type === "heal" ? "#00FF22" : getRarityColor(d.item.rarity);
         ctx.fillStyle = color; ctx.fillRect(d.x, d.y, d.width, d.height);
         ctx.strokeStyle = "white"; ctx.strokeRect(d.x, d.y, d.width, d.height);
     });
 
-    // 玩家
     if(player.invincible % 10 < 5) {
         ctx.fillStyle = "#00FFFF"; ctx.fillRect(player.x, player.y, player.width, player.height);
         ctx.strokeStyle = "white"; ctx.strokeRect(player.x, player.y, player.width, player.height);
     }
 
-    // 子彈
     bullets.forEach(b => { 
         ctx.fillStyle = b.color || "white"; 
         if(b.isRailgun) ctx.fillRect(b.x - b.size/2, b.y - b.size/2, b.size, b.size);
         else ctx.fillRect(b.x, b.y, b.size || 5, b.size || 5); 
     });
 
-    // 小怪
     enemies.forEach(e => {
         ctx.fillStyle = e.type === "fast" ? "#FF8800" : e.type === "tank" ? "#9900FF" : "#FF3333";
         ctx.fillRect(e.x, e.y, e.width, e.height);
@@ -564,15 +558,15 @@ function draw(){
         ctx.fillStyle = "#00FF22"; ctx.fillRect(e.x, e.y - 8, e.width * (e.health / e.maxHealth), 5);
     });
 
-    // BOSS
+    // ===== BOSS 渲染區（已修復：加上 ctx. 避免卡死） =====
     if(boss){
         ctx.fillStyle = "#FF007F"; ctx.fillRect(boss.x, boss.y, boss.width, boss.height);
         ctx.fillStyle = "#222"; ctx.fillRect(200, 15, 400, 20);
         ctx.fillStyle = "#FF0055"; ctx.fillRect(200, 15, 400 * (boss.health / boss.maxHealth), 20);
-        ctx.strokeStyle = "white"; strokeRect(200, 15, 400, 20);
+        ctx.strokeStyle = "white"; ctx.strokeRect(200, 15, 400, 20); // 這裡原本寫錯導致卡死，已修正
     }
 
-    // 頂部常規戰術 UI
+    // UI 區
     ctx.fillStyle = "#222"; ctx.fillRect(10, 20, 200, 16);
     ctx.fillStyle = "#00FF66"; ctx.fillRect(10, 20, 200 * (player.health / player.maxHealth), 16);
     ctx.strokeStyle = "white"; ctx.strokeRect(10, 20, 200, 16);
@@ -585,7 +579,6 @@ function draw(){
     ctx.fillText("護甲: " + equipment.armor + " | 速度: " + equipment.speed + " | 雙發: " + (equipment.doubleBullet?"ON":"OFF") + " | 追蹤: " + (equipment.tracking?"ON":"OFF"), 10, 120);
     ctx.fillStyle = "#00FFCC"; ctx.fillText("1-6: 武器切換 | B: 軍火商店 | I: 整備背包與核心熔煉", 10, 140);
 
-    // 右上角：手動存檔 UI 與提示
     ctx.fillStyle = "#1a3a3a"; ctx.fillRect(680, 20, 100, 35);
     ctx.strokeStyle = "#00FFCC"; ctx.strokeRect(680, 20, 100, 35);
     ctx.fillStyle = "#00FFCC"; ctx.font = "14px Arial"; ctx.fillText("手動存檔", 702, 42);
@@ -595,14 +588,11 @@ function draw(){
         ctx.fillText("● 雲端存檔同步成功", 650, 75);
     }
 
-    // ===== 背包、核心熔煉與製造 UI 面板 =====
     if(showUI){
         ctx.fillStyle = "rgba(12,15,25,0.96)"; ctx.fillRect(120, 150, 560, 600);
         ctx.strokeStyle = "#00FFCC"; ctx.strokeRect(120, 150, 560, 600);
-        
         ctx.fillStyle = "#00FFFF"; ctx.font = "22px Arial"; ctx.fillText("【外骨骼核心裝備面板】", 270, 195);
         
-        // 1. 已穿戴裝備欄
         let y = 240;
         for(let k in gear){
             let isEquipped = gear[k];
@@ -613,10 +603,7 @@ function draw(){
             y += 35;
         }
         
-        // 分割線
         ctx.strokeStyle = "#334466"; ctx.beginPath(); ctx.moveTo(150, y+10); ctx.lineTo(650, y+10); ctx.stroke();
-        
-        // 2. 儲存背包（支援最大 6 格）
         ctx.fillStyle = "#FFCC00"; ctx.font = "18px Arial"; ctx.fillText(`【戰術背包物資欄 (MAX: 6, 當前: ${inventory.length})】`, 200, y + 45);
         y += 80;
         
@@ -629,18 +616,15 @@ function draw(){
                 ctx.fillStyle = getRarityColor(item.rarity);
                 ctx.font = "15px Arial";
                 ctx.fillText(`${idx + 1}. ${item.type.toUpperCase()} 模組 [${item.rarity.toUpperCase()}]`, 180, y);
-                
                 ctx.fillStyle = "#AEEAAA"; ctx.font = "12px Arial";
                 ctx.fillText(`(按 ${idx+1} 裝備 / Shift+${idx+1} 熔煉)`, 460, y);
                 y += 32;
             }
         });
         
-        // 3. 底部熔煉鍛造爐
         y = 620;
         ctx.strokeStyle = "#445588"; ctx.strokeRect(150, y, 500, 90);
         ctx.fillStyle = "rgba(20,30,50,0.6)"; ctx.fillRect(150, y, 500, 90);
-        
         ctx.fillStyle = "#00FF66"; ctx.font = "16px Arial"; ctx.fillText("【外骨骼重組微型黑科技鍛造爐】", 170, y + 30);
         ctx.fillStyle = "#FFF"; ctx.font = "14px Arial"; ctx.fillText(`當前儲備奈米合金: ${scrap} / 30 個`, 170, y + 55);
         
@@ -653,13 +637,11 @@ function draw(){
 }
 
 function resetGame(){ 
-    // 核心優化：保留辛苦存下來的 money 和 scrap，只重置當局的分數
     bullets = []; enemies = []; boss = null; drops = []; particles = []; score = 0; killCount = 0; gameOver = false; 
     player.health = 100;
-    saveGame(false); // 復活時自動進行安全存檔保護
+    saveGame(false); 
 }
 
-// 啟動主引擎
 requestAnimationFrame(update);
 </script>
 </body>
